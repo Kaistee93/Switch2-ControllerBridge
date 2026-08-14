@@ -4,6 +4,8 @@ Play on your Nintendo Switch or Switch 2 using practically any controller (like 
 
 This project turns an **ESP32-S3** into a wireless bridge. The ESP32 acts as a wired USB "HORIPAD" when plugged into your Switch. Meanwhile, it hosts a local web server. By opening this webpage on your Laptop/PC, the browser captures your PC gamepad inputs and streams them directly to the Switch with extremely low latency via WebSockets.
 
+![WebUI Preview](https://raw.githubusercontent.com/Kaistee93/Switch2-ControllerBridge/main/WebUI.png)
+
 ## 📝 Important Notes & Requirements
 *   **Browser Compatibility:** You must use a modern browser that supports the HTML5 Gamepad API (Google Chrome or Microsoft Edge are highly recommended).
 *   **Controller Activation:** The browser will not detect your controller until you press at least one physical button *after* loading the page (this is a standard browser security feature).
@@ -75,3 +77,6 @@ For a visual reference, check the repository file `photo_5188168018394028069_y.j
 
 ## 📄 License & Usage
 This project is open-source. You are absolutely free to use, modify, fork, and distribute this software however you like. Contributions and pull requests are always welcome! Let's build something cool for the community.
+
+---
+*Note: Made with the help of AI*
