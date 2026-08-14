@@ -1,36 +1,37 @@
 /*
   ============================================================================
-  ESP32-S3  ->  Nintendo Switch / Switch 2 Controller-Relay über WLAN
+  ESP32-S3 -> Nintendo Switch / Switch 2 Controller Relay via WiFi
   ============================================================================
   
-  ÄNDERUNGEN:
-  - Verbindet sich nun mit dem heimischen Router (STA Mode).
-  - Nutzt die VID/PID des HORIPAD for Nintendo Switch (0x0F0D / 0x00C1), 
-    da die Switch 2 das alte Pokken Pad oft abweist.
+  FEATURES:
+  - Acts as a "HORIPAD for Nintendo Switch" (VID 0x0F0D / PID 0x00C1) via native 
+    USB. This is accepted by Switch 1 and often Switch 2.
+  - Uses WiFiManager: Opens an AP "ESP32-Switch-Setup" on first boot to 
+    configure your local WiFi credentials without hardcoding them.
+  - Hosts a Web UI to capture gamepad inputs (e.g., PS4 controller) from a 
+    connected PC/Laptop and streams them via WebSockets to the Switch.
 
   ============================================================================
-  ARDUINO IDE - EINSTELLUNGEN (Tools-Menü) -> ZWINGEND FÜR SWITCH 2!
+  ARDUINO IDE - BOARD SETTINGS (CRITICAL FOR SWITCH 2!)
   ============================================================================
   - Board:             "ESP32S3 Dev Module"
   - USB Mode:          "USB-OTG (TinyUSB)" 
-  - USB CDC On Boot:   "Disabled" <-- WICHTIG! Die Switch 2 lehnt den Controller
-                                      ab, wenn er sich zusätzlich als serieller 
-                                      COM-Port (CDC) meldet!
+  - USB CDC On Boot:   "Disabled" <-- CRITICAL! The Switch 2 rejects the device
+                                      if it presents itself as a Serial Port (CDC)
+                                      alongside the controller.
 */
 
 #include <WiFi.h>
 #include <WebServer.h>
 #include <WebSocketsServer.h>
+#include <WiFiManager.h> // https://github.com/tzapu/WiFiManager
 #include "USB.h"
 #include "USBHID.h"
 
 // ---------------------------------------------------------------------------
-// WLAN-Einstellungen (HIER DEINE DATEN EINTRAGEN)
+// Configuration
 // ---------------------------------------------------------------------------
-const char *WIFI_SSID     = "WIFI_SSID";
-const char *WIFI_PASSWORD = "WIFI_PASSWD";
-
-const uint16_t REPORT_INTERVAL_MS = 8;   // ~125 Hz Report-Rate
+const uint16_t REPORT_INTERVAL_MS = 8;   // ~125 Hz polling rate
 const uint16_t HEARTBEAT_INTERVAL_MS = 1000;
 
 // ---------------------------------------------------------------------------
@@ -63,10 +64,10 @@ static const uint8_t hid_report_descriptor[] = {
   0x81, 0x01,        //   INPUT (Cnst,Arr,Abs)
   0x26, 0xFF, 0x00,  //   LOGICAL_MAXIMUM (255)
   0x46, 0xFF, 0x00,  //   PHYSICAL_MAXIMUM (255)
-  0x09, 0x30,        //   USAGE (X)   -> linker Stick X
-  0x09, 0x31,        //   USAGE (Y)   -> linker Stick Y
-  0x09, 0x32,        //   USAGE (Z)   -> rechter Stick X
-  0x09, 0x35,        //   USAGE (Rz)  -> rechter Stick Y
+  0x09, 0x30,        //   USAGE (X)   -> Left Stick X
+  0x09, 0x31,        //   USAGE (Y)   -> Left Stick Y
+  0x09, 0x32,        //   USAGE (Z)   -> Right Stick X
+  0x09, 0x35,        //   USAGE (Rz)  -> Right Stick Y
   0x75, 0x08,        //   REPORT_SIZE (8)
   0x95, 0x04,        //   REPORT_COUNT (4)
   0x81, 0x02,        //   INPUT (Data,Var,Abs)
@@ -121,7 +122,7 @@ public:
 SwitchControllerHID SwitchPad;
 
 // ---------------------------------------------------------------------------
-// Zustand
+// State Variables
 // ---------------------------------------------------------------------------
 uint8_t currentReport[8] = {0, 0, 8, 128, 128, 128, 128, 0};
 const uint8_t neutralReport[8] = {0, 0, 8, 128, 128, 128, 128, 0};
@@ -135,11 +136,11 @@ WebServer server(80);
 WebSocketsServer webSocket(81);
 
 // ---------------------------------------------------------------------------
-// HTML-Seite 
+// HTML Web Interface
 // ---------------------------------------------------------------------------
 const char INDEX_HTML[] = R"HTMLCONTENT(
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -182,22 +183,22 @@ const char INDEX_HTML[] = R"HTMLCONTENT(
 </head>
 <body>
   <h1>ESP32-S3 &rarr; Switch Controller</h1>
-  <div class="sub">Steuerung per PS4-Controller am Laptop</div>
+  <div class="sub">Relay PC Gamepad Inputs (e.g. PS4 Controller)</div>
   <div class="card">
-    <div class="status-row"><span class="dot" id="wsDot"></span><span id="wsText">Verbinde...</span></div>
-    <div class="status-row"><span class="dot" id="gpDot"></span><span id="gpText">Kein Controller erkannt</span></div>
-    <div class="status-row small">Verbundene Browser-Clients am ESP32: <span id="clients">-</span></div>
+    <div class="status-row"><span class="dot" id="wsDot"></span><span id="wsText">Connecting...</span></div>
+    <div class="status-row"><span class="dot" id="gpDot"></span><span id="gpText">No controller detected</span></div>
+    <div class="status-row small">Connected Browser Clients: <span id="clients">-</span></div>
   </div>
   <div class="card">
     <button id="startStopBtn" class="btn start">&#9654; Start</button>
-    <div class="status-row small" id="runText" style="margin-top:8px;">Angehalten (Eingaben werden NICHT gesendet)</div>
+    <div class="status-row small" id="runText" style="margin-top:8px;">Stopped (Inputs are NOT being sent)</div>
   </div>
   <div class="card">
     <canvas id="padCanvas" width="340" height="230"></canvas>
     <div class="hint">
-      Anleitung: PS4-Controller mit dem Laptop verbinden (USB oder Bluetooth) &middot;
-      einmal einen beliebigen Knopf drücken, damit ihn der Browser erkennt &middot;
-      dann oben auf Start tippen.
+      Instructions: Connect a PS4 controller to your laptop (USB/Bluetooth) &middot;
+      Press any button once to register it in the browser &middot;
+      Then tap Start above.
     </div>
   </div>
 <script>
@@ -232,21 +233,21 @@ function setDot(id, ok) {
 }
 function updateStatus() {
   setDot("wsDot", wsConnected);
-  document.getElementById("wsText").textContent = wsConnected ? "Verbunden mit ESP32" : "Getrennt - verbinde erneut...";
+  document.getElementById("wsText").textContent = wsConnected ? "Connected to ESP32" : "Disconnected - retrying...";
   const btn = document.getElementById("startStopBtn");
   btn.textContent = running ? "\u23F9 Stop" : "\u25B6 Start";
   btn.className = "btn " + (running ? "stop" : "start");
   document.getElementById("runText").textContent = running
-    ? "Aktiv: Eingaben werden an die Switch übertragen"
-    : "Angehalten (Eingaben werden NICHT gesendet)";
+    ? "Active: Sending inputs to Nintendo Switch"
+    : "Stopped (Inputs are NOT being sent)";
 }
 function updateGamepadStatus(ok, name) {
   if (ok === gpConnected) return;
   gpConnected = ok;
   setDot("gpDot", ok);
   document.getElementById("gpText").textContent = ok
-    ? ("Controller erkannt: " + (name || ""))
-    : "Kein Controller - bitte einen Knopf am PS4-Controller drücken";
+    ? ("Controller found: " + (name || ""))
+    : "No controller - press a button to register";
 }
 function setRunning(state) {
   running = state;
@@ -375,7 +376,7 @@ requestAnimationFrame(loop);
 )HTMLCONTENT";
 
 // ---------------------------------------------------------------------------
-// Webserver / WebSocket
+// Server / WebSocket Handlers
 // ---------------------------------------------------------------------------
 void handleRoot() { server.send(200, "text/html", INDEX_HTML); }
 void handleNotFound() { server.sendHeader("Location", "/"); server.send(302, "text/plain", ""); }
@@ -435,15 +436,11 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t *payload, size_t length)
 // Setup / Loop
 // ---------------------------------------------------------------------------
 void setup() {
-  // HINWEIS: Wenn in der IDE "USB CDC On Boot" deaktiviert ist (wie es für die
-  // Switch 2 nötig ist), siehst du im Seriellen Monitor über den nativen USB-Port
-  // keine Ausgaben mehr! Du musst die IP dann über deinen Router herausfinden, 
-  // oder ein Entwicklerboard mit separatem UART-USB-Port zum Debuggen nutzen.
   Serial.begin(115200);
-  delay(1500);
+  delay(100); // Delay verkürzt, damit USB schneller reagiert
 
-  // --- USB HID ---
-  // Horipad for Nintendo Switch (oft von der Switch 2 eher akzeptiert)
+  // --- 1. USB HID ZUERST INITIALISIEREN! ---
+  // Das muss sofort passieren, sonst gibt es bei der Switch einen Timeout
   USB.VID(0x0F0D);
   USB.PID(0x00C1);
   USB.manufacturerName("HORI CO.,LTD.");
@@ -451,21 +448,12 @@ void setup() {
   SwitchPad.begin();
   USB.begin();
 
-  // --- WLAN Station (Mit Router verbinden) ---
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  
-  // Warten bis verbunden
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
+  // --- 2. DANN ERST WLAN (WiFiManager) ---
+  WiFiManager wifiManager;
+  // wifiManager.resetSettings(); // Auskommentieren, um WLAN-Daten zu löschen
+  wifiManager.autoConnect("ESP32-Switch-Setup");
 
-  Serial.println("");
-  Serial.println("=== ESP32-S3 Switch Controller Relay ===");
-  Serial.print("[WLAN] Verbunden mit: "); Serial.println(WIFI_SSID);
-  Serial.print("[WLAN] IP-Adresse: "); Serial.println(WiFi.localIP());
-
+  // --- 3. SERVER STARTEN ---
   server.on("/", handleRoot);
   server.onNotFound(handleNotFound);
   server.begin();
